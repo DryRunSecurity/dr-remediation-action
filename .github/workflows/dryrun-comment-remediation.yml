@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: DryRunSecurity/external-plugin-marketplace
-          ref: be4bc1c1ee311d52fc0c4f3cebbcd7fc4907214a
+          ref: 918ad791da12f5b7bfa95d3e30a064a18bc9170a
           path: skills
           persist-credentials: false
       - name: Test trusted runner without credentials

@@ -141,7 +141,7 @@ Anthropic-compatible gateways use `provider: anthropic` with their `base_url`, m
 The runtime lives here; the skills remain in [external-plugin-marketplace](https://github.com/DryRunSecurity/external-plugin-marketplace). Nothing is fetched from a mutable skill branch.
 
 - Four runtime checkouts (both jobs in both workflows) pin `09cd3c78de765a0070a5ac7e2b257c5ba474c3de` in this repository.
-- Two skill checkouts (proposal jobs only) pin `be4bc1c1ee311d52fc0c4f3cebbcd7fc4907214a` in the skill repository. That dependency is the skill-only [PR #13](https://github.com/DryRunSecurity/external-plugin-marketplace/pull/13).
+- Two skill checkouts (proposal jobs only) pin merged commit `918ad791da12f5b7bfa95d3e30a064a18bc9170a` in the skill repository, from the skill-only [PR #13](https://github.com/DryRunSecurity/external-plugin-marketplace/pull/13).
 - When changing runtime or skills, commit the implementation first, then update the corresponding four or two checkout pins together and validate before releasing. Merely moving a workflow release reference does not update these implementation pins.
 - After review and merge, publish the first versioned release and `v1` reference. Compatible future releases may advance `v1`; consumers requiring immutable dependencies should pin a full workflow commit SHA. No release is published by the initial implementation PR.
 
