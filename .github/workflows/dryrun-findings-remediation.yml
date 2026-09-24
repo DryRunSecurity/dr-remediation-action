@@ -16,9 +16,9 @@ on:
         type: string
         default: ''
       account_id:
-        description: DryRun account UUID
+        description: DryRun account UUID; blank uses the DRYRUN_ACCOUNT_ID secret
         type: string
-        required: true
+        default: ''
       base_branch:
         description: Remediation base branch; blank uses the caller repository default branch
         type: string
@@ -57,6 +57,9 @@ on:
       DRYRUN_API_KEY:
         description: DryRun API key authorized to read the selected account and findings
         required: true
+      DRYRUN_ACCOUNT_ID:
+        description: DryRun account UUID used when the account_id input is empty
+        required: false
 
 permissions: {}
 
@@ -101,6 +104,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MODEL_BASE_URL: ${{ secrets.MODEL_BASE_URL }}
           DRYRUN_API_KEY: ${{ secrets.DRYRUN_API_KEY }}
+          DRYRUN_ACCOUNT_ID: ${{ secrets.DRYRUN_ACCOUNT_ID }}
           DRYRUN_API_BASE_URL: ${{ inputs.dryrun_api_base_url }}
         run: python3 "$IMPLEMENTATION_ROOT/.github/dcode-remediation/runner.py" prepare-findings --root "$REMEDIATION_ROOT"
       - name: Build isolated pinned dcode runner

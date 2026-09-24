@@ -82,7 +82,9 @@ Without an override, OpenAI uses `https://api.openai.com/v1` and Anthropic uses 
 
 **Comment inputs:** `pr_number` is required for manual calls; optional `comment_id` defaults to the most recently updated verified DryRun comment on that PR. Automatic calls use the event's PR and comment.
 
-**Finding inputs:** exactly one of `finding_id`, `finding_ids`, or `issue_number`, plus required `account_id`. Optional `base_branch` defaults to the caller's default branch; `finding_type` accepts `pullrequest`, `deepscan`, or `sca`. `dryrun_api_base_url` defaults to `https://simple-api.dryrun.security`.
+**Finding inputs:** exactly one of `finding_id`, `finding_ids`, or `issue_number`, plus an account UUID supplied through `account_id` or secret `DRYRUN_ACCOUNT_ID`. A nonempty `account_id` input takes precedence. Optional `base_branch` defaults to the caller's default branch; `finding_type` accepts `pullrequest`, `deepscan`, or `sca`. `dryrun_api_base_url` defaults to `https://simple-api.dryrun.security`.
+
+To inject the account UUID as a secret, omit the caller's `with.account_id` and any account-ID dispatch input, then add `DRYRUN_ACCOUNT_ID: ${{ secrets.DRYRUN_ACCOUNT_ID }}` to its existing `secrets` mapping. The secret is passed only to finding preparation; no repository variable is needed.
 
 **Secrets:** both workflows require `MODEL_API_KEY`, paired with the chosen provider and endpoint. Optional `MODEL_BASE_URL` supplies a private HTTPS endpoint and takes precedence over the public `base_url` input when nonempty. An empty or omitted secret preserves the public input or native default. Findings additionally require `DRYRUN_API_KEY`. The caller's built-in GitHub token is used automatically; no separate GitHub credential is accepted.
 

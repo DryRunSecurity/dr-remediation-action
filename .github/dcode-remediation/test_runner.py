@@ -385,7 +385,7 @@ class TriggerTests(unittest.TestCase):
 class PrivateEndpointTests(unittest.TestCase):
     endpoint = "https://private-gateway.example.com/openai/v1/"
 
-    def prepare(self, kind, provider="openai", endpoint=None, public=""):
+    def prepare(self, kind, provider="openai", endpoint=None, public="", account_secret=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -396,6 +396,9 @@ class PrivateEndpointTests(unittest.TestCase):
                "GITHUB_EVENT_PATH": str(root / "event.json"), "GITHUB_OUTPUT": str(root / "output"),
                "SKILLS_ROOT": str(root / "skills"), "INPUTS_JSON": json.dumps(inputs),
                "MODEL_API_KEY": "private-test-key", "MODEL_BASE_URL": self.endpoint if endpoint is None else endpoint}
+        if account_secret:
+            env["DRYRUN_ACCOUNT_ID"] = inputs.pop("account_id")
+            env["INPUTS_JSON"] = json.dumps(inputs)
         def gh(path, **kwargs):
             if path == f"repos/{REPO}":
                 return {"id": 123, "default_branch": "main"}
@@ -416,6 +419,16 @@ class PrivateEndpointTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch.object(runner, "gh", side_effect=gh), patch.object(runner, "source_archive", side_effect=archive), patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps({"data": finding}))):
             runner.prepare(kind, root)
         return root, inputs, env
+
+    def test_account_secret_without_public_input_preserves_finding_identity(self):
+        public_root, _, _ = self.prepare("findings")
+        root, inputs, env = self.prepare("findings", account_secret=True)
+        self.assertEqual(env["DRYRUN_ACCOUNT_ID"], ACCOUNT)
+        self.assertNotIn("account_id", inputs)
+        context = runner.load(root / "context.json")
+        self.assertEqual(context["inputs"], inputs)
+        self.assertEqual(context["version"], runner.load(public_root / "context.json")["version"])
+        self.assertNotIn(ACCOUNT, (root / "context.json").read_text())
 
     def test_secret_precedence_and_private_config_for_both_workflows(self):
         for kind in ("comment", "findings"):
