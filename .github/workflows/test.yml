@@ -26,4 +26,6 @@ jobs:
           rhysd/actionlint:1.7.12 -shellcheck=
           .github/workflows/*.yml examples/github-actions/*.yml
       - name: Build runtime and verify pinned tool policy
-        run: docker build --tag dcode-remediation:0.1.66 .github/dcode-remediation
+        run: |
+          docker build --tag dcode-remediation:0.1.66 .github/dcode-remediation
+          docker run --rm --entrypoint python dcode-remediation:0.1.66 -m unittest test_runner.PrivateEndpointTests -v

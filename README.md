@@ -84,7 +84,21 @@ Without an override, OpenAI uses `https://api.openai.com/v1` and Anthropic uses 
 
 **Finding inputs:** exactly one of `finding_id`, `finding_ids`, or `issue_number`, plus required `account_id`. Optional `base_branch` defaults to the caller's default branch; `finding_type` accepts `pullrequest`, `deepscan`, or `sca`. `dryrun_api_base_url` defaults to `https://simple-api.dryrun.security`.
 
-**Secrets:** both workflows require `MODEL_API_KEY`, paired with the chosen provider and endpoint. Findings additionally require `DRYRUN_API_KEY`. The caller's built-in GitHub token is used automatically; no separate GitHub credential is accepted.
+**Secrets:** both workflows require `MODEL_API_KEY`, paired with the chosen provider and endpoint. Optional `MODEL_BASE_URL` supplies a private HTTPS endpoint and takes precedence over the public `base_url` input when nonempty. An empty or omitted secret preserves the public input or native default. Findings additionally require `DRYRUN_API_KEY`. The caller's built-in GitHub token is used automatically; no separate GitHub credential is accepted.
+
+For a private Azure OpenAI-compatible endpoint, store the full resource URL ending in `/openai/v1` in repository secret `MODEL_BASE_URL` and the Azure API key in `OPENAI_API_KEY`. Add these settings to the calling job, retaining its existing target inputs and any `DRYRUN_API_KEY` mapping:
+
+```yaml
+with:
+  provider: openai
+  model: YOUR_AZURE_DEPLOYMENT_NAME
+  use_responses_api: true
+secrets:
+  MODEL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  MODEL_BASE_URL: ${{ secrets.MODEL_BASE_URL }}
+```
+
+Pass the endpoint under `secrets`, not `with`: GitHub does not allow secret expressions in reusable-job inputs. The secret is used only during preparation and agent execution; it is not stored in the published context or prompt. The private runtime configuration is not bundled, and endpoint/hostname diagnostics and the API key are redacted from retained agent output and errors. This uses the compatible v1 API with a deployment name; no Azure-specific SDK or `api-version` parameter is needed.
 
 For Anthropic, merge this into the caller's job, retaining any finding inputs and `DRYRUN_API_KEY` mapping:
 
@@ -124,7 +138,7 @@ Anthropic-compatible gateways use `provider: anthropic` with their `base_url`, m
 
 The runtime lives here; the skills remain in [external-plugin-marketplace](https://github.com/DryRunSecurity/external-plugin-marketplace). Nothing is fetched from a mutable skill branch.
 
-- Four runtime checkouts (both jobs in both workflows) pin `2d3678211ba7555b38a8df2e155455a22d7e9dc1` in this repository.
+- Four runtime checkouts (both jobs in both workflows) pin `09cd3c78de765a0070a5ac7e2b257c5ba474c3de` in this repository.
 - Two skill checkouts (proposal jobs only) pin `be4bc1c1ee311d52fc0c4f3cebbcd7fc4907214a` in the skill repository. That dependency is the skill-only [PR #13](https://github.com/DryRunSecurity/external-plugin-marketplace/pull/13).
 - When changing runtime or skills, commit the implementation first, then update the corresponding four or two checkout pins together and validate before releasing. Merely moving a workflow release reference does not update these implementation pins.
 - After review and merge, publish the first versioned release and `v1` reference. Compatible future releases may advance `v1`; consumers requiring immutable dependencies should pin a full workflow commit SHA. No release is published by the initial implementation PR.
