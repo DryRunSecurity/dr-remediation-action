@@ -120,11 +120,14 @@ def provider_config(inputs):
     if base:
         if not isinstance(base, str) or any(char.isspace() or ord(char) < 32 for char in base) or "\\" in base:
             raise ValueError("Invalid base_url")
-        parsed = urllib.parse.urlsplit(base)
+        try:
+            parsed = urllib.parse.urlsplit(base)
+            parsed.port
+        except ValueError:
+            raise ValueError("Invalid base_url") from None
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
                 or parsed.password is not None or parsed.query or parsed.fragment):
             raise ValueError("base_url must be an HTTPS endpoint without credentials or query parameters")
-        parsed.port
     responses = str(inputs.get("use_responses_api", "true")).lower()
     if responses not in {"true", "false"}:
         raise ValueError("use_responses_api must be true or false")
@@ -366,7 +369,7 @@ def prepare(kind, root):
         source_archive(repo, context["explanation_head"], root / "source")
     else:
         shutil.copytree(root / "original", root / "source")
-    model, key, config = provider_config(inputs)
+    model, key, config = provider_config(dict(inputs, base_url=os.environ.get("MODEL_BASE_URL") or inputs.get("base_url")))
     context.update(model=model, key_env=key, skill=skill)
     save(root / "context.json", context)
     (root / "config.toml").write_text(config)
@@ -460,11 +463,22 @@ def complete_npm(root):
         (root / "npm-completed").touch()
 
 
+def redact_agent_output(value, key, endpoint):
+    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+    text = text.replace(key, "[REDACTED]")
+    if endpoint:
+        for secret in (endpoint.rstrip("/"), urllib.parse.urlsplit(endpoint).hostname):
+            if secret:
+                text = re.sub(re.escape(secret), "[REDACTED]", text, flags=re.IGNORECASE)
+    return text
+
+
 def run_agent(root):
     context = load(root / "context.json")
     key = os.environ.get("MODEL_API_KEY", "")
     if not key:
         raise ValueError("Model API key secret is missing")
+    endpoint = os.environ.get("MODEL_BASE_URL", "")
     skills_root = Path(os.environ["SKILLS_ROOT"]).resolve()
     env = dict(os.environ)
     env[context["key_env"]] = key
@@ -475,10 +489,14 @@ def run_agent(root):
                "--mount", f"type=bind,src={skills_root},dst=/skills,readonly",
                "--mount", f"type=bind,src={Path(__file__).resolve()},dst=/runner.py,readonly",
                "-e", context["key_env"], "dcode-remediation:0.1.66", "python", "/runner.py", "agent", "--root", "/input"]
-    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=1000)
-    (root / "agent-output.txt").write_text(result.stdout.replace(key, "[REDACTED]"))
+    try:
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=1000)
+    except subprocess.TimeoutExpired as error:
+        (root / "agent-output.txt").write_text(redact_agent_output(error.stdout, key, endpoint))
+        raise RuntimeError("dcode timed out; " + redact_agent_output(error.stderr, key, endpoint)[-4000:]) from None
+    (root / "agent-output.txt").write_text(redact_agent_output(result.stdout, key, endpoint))
     if result.returncode:
-        raise RuntimeError("dcode failed; " + result.stderr.replace(key, "[REDACTED]")[-4000:])
+        raise RuntimeError("dcode failed; " + redact_agent_output(result.stderr, key, endpoint)[-4000:])
 
 
 def agent(root):

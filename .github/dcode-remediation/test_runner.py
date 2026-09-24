@@ -382,6 +382,107 @@ class TriggerTests(unittest.TestCase):
                 run.assert_not_called()
 
 
+class PrivateEndpointTests(unittest.TestCase):
+    endpoint = "https://private-gateway.example.com/openai/v1/"
+
+    def prepare(self, kind, provider="openai", endpoint=None, public=""):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        runner.save(root / "event.json", {})
+        inputs = {"pr_number": "7", "comment_id": "42"} if kind == "comment" else {"finding_id": ONE, "account_id": ACCOUNT}
+        inputs.update(provider=provider, base_url=public)
+        env = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_ACTOR": "writer",
+               "GITHUB_EVENT_PATH": str(root / "event.json"), "GITHUB_OUTPUT": str(root / "output"),
+               "SKILLS_ROOT": str(root / "skills"), "INPUTS_JSON": json.dumps(inputs),
+               "MODEL_API_KEY": "private-test-key", "MODEL_BASE_URL": self.endpoint if endpoint is None else endpoint}
+        def gh(path, **kwargs):
+            if path == f"repos/{REPO}":
+                return {"id": 123, "default_branch": "main"}
+            if path.endswith("/permission"):
+                return {"permission": "write"}
+            if path.endswith("/pulls/7"):
+                return {"state": "open", "head": {"sha": "a" * 40, "repo": {"id": 123}}, "base": {"ref": "main"}}
+            if path.endswith("/issues/comments/42"):
+                return comment()
+            if "/branches/" in path:
+                return {"commit": {"sha": "a" * 40}}
+            self.assertIn("/pulls?", path)
+            return []
+        def archive(repo, sha, target):
+            (target / "app").mkdir(parents=True)
+            (target / "app/test.rb").write_text("old\n")
+        finding = {"id": ONE, "account_id": ACCOUNT, "provider_repo_id": 123, "finding_type": "deepscan"}
+        with patch.dict(os.environ, env, clear=True), patch.object(runner, "gh", side_effect=gh), patch.object(runner, "source_archive", side_effect=archive), patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps({"data": finding}))):
+            runner.prepare(kind, root)
+        return root, inputs, env
+
+    def test_secret_precedence_and_private_config_for_both_workflows(self):
+        for kind in ("comment", "findings"):
+            for provider in ("openai", "anthropic"):
+                with self.subTest(kind=kind, provider=provider):
+                    root, inputs, env = self.prepare(kind, provider, public="https://public.example.com/v1")
+                    config = tomllib.loads((root / "config.toml").read_text())
+                    self.assertEqual(config["models"]["providers"][provider]["base_url"], self.endpoint.rstrip("/"))
+                    self.assertEqual(runner.load(root / "context.json")["inputs"], inputs)
+                    self.assertEqual(inputs["base_url"], "https://public.example.com/v1")
+                    for name in ("context.json", "prompt.txt", "output", "source/app/test.rb"):
+                        self.assertNotIn("private-gateway.example.com", (root / name).read_text())
+
+    def test_empty_secret_preserves_native_and_public_defaults(self):
+        for kind in ("comment", "findings"):
+            for provider in ("openai", "anthropic"):
+                for public in ("", "https://public.example.com/v1/"):
+                    with self.subTest(kind=kind, provider=provider, public=public):
+                        root, inputs, env = self.prepare(kind, provider, endpoint="", public=public)
+                        config = tomllib.loads((root / "config.toml").read_text())["models"]["providers"][provider]
+                        self.assertEqual(config.get("base_url", ""), public.rstrip("/"))
+                        self.assertEqual(runner.load(root / "context.json")["inputs"], inputs)
+
+    def test_invalid_private_endpoint_is_rejected_without_echoing_it(self):
+        for endpoint in ("http://private-gateway.example.com/openai/v1", "https://private-gateway.example.com:private-gateway.example.com/openai/v1", "https://[private-gateway.example.com/openai/v1"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError) as raised:
+                self.prepare("comment", endpoint=endpoint)
+            self.assertNotIn("private-gateway.example.com", str(raised.exception))
+
+    def test_agent_output_and_artifacts_redact_endpoint_and_key(self):
+        for outcome in ("success", "failure", "timeout"):
+            with self.subTest(outcome=outcome):
+                root, inputs, env = self.prepare("comment")
+                sensitive = (self.endpoint + " " + self.endpoint.rstrip("/") + " "
+                             + "https://PRIVATE-GATEWAY.EXAMPLE.COM/openai/v1/responses "
+                             + "private-gateway.example.com PRIVATE-GATEWAY.EXAMPLE.COM " + env["MODEL_API_KEY"])
+                response = json.dumps({"summary": sensitive, "files": {"app/test.rb": "Fix: " + sensitive}})
+                result = subprocess.CompletedProcess([], 0 if outcome == "success" else 1, response, sensitive)
+                with patch.dict(os.environ, env, clear=True), patch.object(runner.subprocess, "run", return_value=result) as run:
+                    if outcome == "timeout":
+                        run.side_effect = subprocess.TimeoutExpired(["docker"], 1000, output=response.encode(), stderr=sensitive.encode())
+                    if outcome == "success":
+                        runner.run_agent(root)
+                    else:
+                        with self.assertRaises(RuntimeError) as raised:
+                            runner.run_agent(root)
+                        self.assertNotIn("private-gateway.example.com", str(raised.exception).lower())
+                        self.assertNotIn(env["MODEL_API_KEY"], str(raised.exception))
+                        self.assertIn("[REDACTED]", str(raised.exception))
+                        if outcome == "timeout":
+                            self.assertTrue(raised.exception.__suppress_context__)
+                command = run.call_args.args[0]
+                self.assertNotIn(self.endpoint, " ".join(command))
+                self.assertEqual([command[i + 1] for i, item in enumerate(command) if item == "-e"], ["OPENAI_API_KEY"])
+                saved = (root / "agent-output.txt").read_text()
+                self.assertNotIn("private-gateway.example.com", saved.lower())
+                self.assertNotIn(env["MODEL_API_KEY"], saved)
+                self.assertIn("[REDACTED]", saved)
+                if outcome == "success":
+                    (root / "source/app/test.rb").write_text("new\n")
+                    runner.bundle(root)
+                    self.assertFalse((root / "artifact/config.toml").exists())
+                    for path in (root / "artifact").iterdir():
+                        self.assertNotIn("private-gateway.example.com", path.read_text().lower())
+                        self.assertNotIn(env["MODEL_API_KEY"], path.read_text())
+
+
 class ProviderTests(unittest.TestCase):
     def test_defaults_and_responses_configuration(self):
         model, key, raw = runner.provider_config({})
