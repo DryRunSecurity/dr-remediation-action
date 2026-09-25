@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: DryRunSecurity/dr-remediation-action
-          ref: 09cd3c78de765a0070a5ac7e2b257c5ba474c3de
+          ref: 95fc5a9b65e6055714fcf9ee443e5c3af66cffba
           path: implementation
           persist-credentials: false
       - uses: actions/checkout@v6
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: DryRunSecurity/dr-remediation-action
-          ref: 09cd3c78de765a0070a5ac7e2b257c5ba474c3de
+          ref: 95fc5a9b65e6055714fcf9ee443e5c3af66cffba
           path: implementation
           persist-credentials: false
       - uses: actions/download-artifact@v8

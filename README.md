@@ -36,7 +36,9 @@ jobs:
       MODEL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-Automatic runs accept only created/edited PR **timeline conversation comments** from `dryrunsecurity[bot]` (ID `142451713`, type `Bot`), not inline review comments. The full example also supports manual dispatch. Only open same-repository PRs are supported; forks are excluded. Manual comment runs and all finding runs require a repository writer.
+Automatic runs accept only created/edited PR **timeline conversation comments** from `dryrunsecurity[bot]` (ID `142451713`, type `Bot`), not inline review comments. The bot must also be the event sender, so a person editing DryRun's comment does not trigger an automatic run. The full example also supports manual dispatch. Only open same-repository PRs are supported; forks are excluded. Manual comment runs and all finding runs require a repository writer.
+
+Comment runs are serialized per PR. A newer DryRun comment edit cancels an in-progress proposal for the same PR. If the comment or PR head changes before publishing, the older run skips publication instead of failing. If the agent proposes no changes, for example after DryRun reports the PR clean, the workflow removes its earlier suggestions for that comment and posts the agent's explanation.
 
 A reusable workflow is called at the **job level**, as above. It supplies separate generation and publishing jobs. A root `uses: DryRunSecurity/dr-remediation-action@v1` step would require an `action.yml` and cannot encapsulate this multi-job separation; this repository deliberately exposes workflows instead.
 
@@ -140,7 +142,7 @@ Anthropic-compatible gateways use `provider: anthropic` with their `base_url`, m
 
 The runtime lives here; the skills remain in [external-plugin-marketplace](https://github.com/DryRunSecurity/external-plugin-marketplace). Nothing is fetched from a mutable skill branch.
 
-- Four runtime checkouts (both jobs in both workflows) pin `09cd3c78de765a0070a5ac7e2b257c5ba474c3de` in this repository.
+- Four runtime checkouts (both jobs in both workflows) pin `95fc5a9b65e6055714fcf9ee443e5c3af66cffba` in this repository.
 - Two skill checkouts (proposal jobs only) pin commit `918ad791da12f5b7bfa95d3e30a064a18bc9170a` on the skill repository's `main` branch.
 - When changing runtime or skills, commit the implementation first, then update the corresponding four or two checkout pins together and validate before releasing. Merely moving a workflow release reference does not update these implementation pins.
 - After review and merge, publish the first versioned release and `v1` reference. Compatible future releases may advance `v1`; consumers requiring immutable dependencies should pin a full workflow commit SHA. No release is published by the initial implementation PR.

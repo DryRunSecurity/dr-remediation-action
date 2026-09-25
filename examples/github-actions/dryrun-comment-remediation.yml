@@ -22,7 +22,9 @@ jobs:
       (github.event.issue.pull_request &&
        github.event.comment.user.id == 142451713 &&
        github.event.comment.user.login == 'dryrunsecurity[bot]' &&
-       github.event.comment.user.type == 'Bot')
+       github.event.comment.user.type == 'Bot' &&
+       github.event.sender.id == 142451713 &&
+       github.event.sender.type == 'Bot')
     permissions:
       contents: read
       pull-requests: write
