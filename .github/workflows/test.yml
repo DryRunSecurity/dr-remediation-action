@@ -1,0 +1,31 @@
+name: Test remediation workflows
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Run runtime regression tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s .github/dcode-remediation -p 'test_*.py' -v
+      - name: Lint reusable workflows and caller examples
+        run: >-
+          docker run --rm --volume "$GITHUB_WORKSPACE:/repo:ro" --workdir /repo
+          rhysd/actionlint:1.7.12 -shellcheck=
+          .github/workflows/*.yml examples/github-actions/*.yml
+      - name: Build runtime and verify pinned tool policy
+        run: |
+          docker build --tag dcode-remediation:0.1.66 .github/dcode-remediation
+          docker run --rm --entrypoint python dcode-remediation:0.1.66 -m unittest test_runner.PrivateEndpointTests -v
