@@ -207,14 +207,14 @@ def snapshot(root):
     return result
 
 
-def changes_between(before, after):
+def changes_between(before, after, allow_empty=False):
     changes = [{"path": path, "before": before.get(path), "after": after.get(path)}
                for path in sorted(before.keys() | after.keys()) if before.get(path) != after.get(path)]
-    return validate_changes(changes)
+    return validate_changes(changes, allow_empty)
 
 
-def validate_changes(changes):
-    if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_FILES:
+def validate_changes(changes, allow_empty=False):
+    if not isinstance(changes, list) or not (0 if allow_empty else 1) <= len(changes) <= MAX_FILES:
         raise ValueError("Expected 1-30 changed files; no patch means no successful remediation")
     seen = set()
     size = 0
@@ -241,7 +241,7 @@ def validate_changes(changes):
 
 def patch_text(changes):
     chunks = []
-    for change in validate_changes(changes):
+    for change in validate_changes(changes, allow_empty=True):
         before, after, path = change["before"], change["after"], change["path"]
         for line in difflib.unified_diff((before or "").splitlines(True), (after or "").splitlines(True),
                                          fromfile="a/" + path if before is not None else "/dev/null",
@@ -276,7 +276,8 @@ def workflow_inputs():
 def authorize_trigger(event, kind):
     automatic = (kind == "comment" and os.environ["GITHUB_EVENT_NAME"] == "issue_comment"
                  and event.get("action") in {"created", "edited"}
-                 and "pull_request" in event.get("issue", {}) and bot_comment(event.get("comment", {})))
+                 and "pull_request" in event.get("issue", {}) and bot_comment(event.get("comment", {}))
+                 and bot_comment({"user": event.get("sender") or {}}))
     if not automatic:
         repo = os.environ["GITHUB_REPOSITORY"]
         permission = gh(f"repos/{repo}/collaborators/{urllib.parse.quote(os.environ['GITHUB_ACTOR'], safe='')}/permission")
@@ -405,6 +406,7 @@ def prepare(kind, root):
         "An external publisher handles those steps. Do not ask questions or fetch the findings again. "
         + work_instruction + "Tests are not available here: explicitly say tests were not run. "
         'Your final response must be only JSON: {"summary": "detailed Markdown", "files": {"changed/path": "specific Markdown rationale"}}. '
+        'If you leave the source unchanged, return an empty files object and explain why in the summary. '
         "The summary must explain each finding by ID and title, its original root cause and impact, the exact changes and locations, "
         "and why those changes prevent the reported issue. Distinguish fixed, already-fixed, and outstanding findings; "
         "state operational prerequisites, remaining limitations, tests not run, and recommended validation without inventing results. "
@@ -548,8 +550,11 @@ def read_report(root, changes):
 
 
 def report_markdown(report):
-    return ("## Agent remediation analysis\n\n" + report["summary"] + "\n\n### Changes by file\n\n"
-            + "\n\n".join(f"#### `{path}`\n\n{text}" for path, text in report["files"].items()) + "\n\n")
+    body = "## Agent remediation analysis\n\n" + report["summary"] + "\n\n"
+    if report["files"]:
+        body += ("### Changes by file\n\n"
+                 + "\n\n".join(f"#### `{path}`\n\n{text}" for path, text in report["files"].items()) + "\n\n")
+    return body
 
 
 def bounded_body(body):
@@ -559,9 +564,10 @@ def bounded_body(body):
 
 
 def bundle(root):
-    changes = changes_between(snapshot(root / "original"), snapshot(root / "source"))
+    comment = load(root / "context.json")["kind"] == "comment"
+    changes = changes_between(snapshot(root / "original"), snapshot(root / "source"), allow_empty=comment)
     patch = patch_text(changes)
-    if not patch:
+    if not patch and not comment:
         raise ValueError("No actual patch was generated")
     report = parse_report((root / "agent-output.txt").read_text(), changes)
     if (root / "npm-completed").is_file():
@@ -579,13 +585,17 @@ def bundle(root):
     (destination / "fix.patch").write_text(patch)
 
 
+class StaleSource(ValueError):
+    pass
+
+
 def recheck_source(context):
     repo = context["repository"]
     if context["kind"] == "comment":
         pr = gh(f"repos/{repo}/pulls/{context['pr_number']}")
         comment = gh(f"repos/{repo}/issues/comments/{context['comment_id']}")
         if not current_comment(context, pr, comment) or comment["issue_url"].split("/")[-1] != str(context["pr_number"]):
-            raise ValueError("Source comment or PR changed; refusing stale publication")
+            raise StaleSource("Source comment or PR changed; refusing stale publication")
     else:
         branch = gh(f"repos/{repo}/branches/{urllib.parse.quote(context['base_branch'], safe='')}")
         if branch["commit"]["sha"] != context["sha"]:
@@ -603,7 +613,7 @@ def recheck_source(context):
 
 def verify_publication(root, kind):
     context = load(root / "context.json")
-    changes = validate_changes(load(root / "changes.json"))
+    changes = validate_changes(load(root / "changes.json"), allow_empty=kind == "comment")
     repo = os.environ["GITHUB_REPOSITORY"]
     metadata = gh(f"repos/{repo}")
     if context["repository"] != repo or context["repository_id"] != metadata["id"] or context["kind"] != kind:
@@ -721,13 +731,18 @@ def publish_comment(root):
     patch = patch_text(changes)
     run = f"https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     source = f"https://github.com/{repo}/pull/{number}#issuecomment-{context['comment_id']}"
-    body = (f"## Proposed DryRun fixes\n\n[Source comment]({source}) · head `{context['sha'][:12]}`\n\n"
-            f"{len(changes)} file(s); {len(inline)} inline suggestion(s). **No commits or pushes were made. Tests were not run.**\n\n"
-            "Review the complete patch together; individual suggestions may depend on other changes.\n\n")
+    if changes:
+        body = (f"## Proposed DryRun fixes\n\n[Source comment]({source}) · head `{context['sha'][:12]}`\n\n"
+                f"{len(changes)} file(s); {len(inline)} inline suggestion(s). **No commits or pushes were made. Tests were not run.**\n\n"
+                "Review the complete patch together; individual suggestions may depend on other changes.\n\n")
+    else:
+        body = (f"## No DryRun fix proposed\n\n[Source comment]({source}) · head `{context['sha'][:12]}`\n\n"
+                "The agent proposed no code changes for the current DryRun comment. "
+                "Earlier suggestions from this workflow for this comment were removed.\n\n")
     body += report_markdown(report)
     footer = f"[Download the complete patch and agent explanation]({run})\n\n{marker}\n{version}"
     patch_section = "<details><summary>Complete proposed patch</summary>\n\n````diff\n" + patch + "````\n</details>\n\n"
-    if len(patch) < 45000 and "````" not in patch and len((body + patch_section + footer).encode()) <= MAX_BODY:
+    if patch and len(patch) < 45000 and "````" not in patch and len((body + patch_section + footer).encode()) <= MAX_BODY:
         body += patch_section
     upsert(repo, number, marker, bounded_body(body + footer), context)
 
@@ -845,8 +860,13 @@ def main():
     args = parser.parse_args()
     if args.command.startswith("prepare-"):
         prepare(args.command.removeprefix("prepare-"), args.root)
-    else:
+        return
+    try:
         globals()[args.command.replace("-", "_")](args.root)
+    except StaleSource as error:
+        if args.command != "publish-comment":
+            raise
+        print(f"::notice::{error}; a newer run handles the current comment")
 
 
 if __name__ == "__main__":

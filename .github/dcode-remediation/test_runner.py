@@ -327,15 +327,19 @@ class TriggerTests(unittest.TestCase):
                         gh.assert_called_once_with(f"repos/{REPO}/collaborators/example-writer/permission")
 
     def test_only_verified_new_or_edited_pr_bot_comments_bypass_writer(self):
-        event = {"action": "created", "issue": {"number": 7, "pull_request": {}}, "comment": comment()}
+        event = {"action": "created", "issue": {"number": 7, "pull_request": {}}, "comment": comment(),
+                 "sender": dict(comment()["user"])}
         env = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "issue_comment", "GITHUB_ACTOR": "example-reader"}
         with patch.dict(os.environ, env), patch.object(runner, "gh", return_value={"permission": "read"}) as gh:
             for action in ("created", "edited"):
                 self.assertTrue(runner.authorize_trigger(dict(event, action=action), "comment"))
             gh.assert_not_called()
-            invalid = [dict(event, action="deleted"), dict(event, issue={"number": 7})]
+            invalid = [dict(event, action="deleted"), dict(event, issue={"number": 7}),
+                       {key: value for key, value in event.items() if key != "sender"},
+                       dict(event, action="edited", sender={"id": 5, "login": "example-writer", "type": "User"})]
             for field, value in (("id", 99), ("login", "lookalike[bot]"), ("type", "User")):
                 invalid.append(dict(event, comment=dict(comment(), user=dict(comment()["user"], **{field: value}))))
+                invalid.append(dict(event, sender=dict(comment()["user"], **{field: value})))
             for changed in invalid:
                 with self.subTest(event=changed), self.assertRaisesRegex(ValueError, "repository writer"):
                     runner.authorize_trigger(changed, "comment")
@@ -730,6 +734,28 @@ class ReportTests(unittest.TestCase):
             self.assertTrue((root / "artifact/fix.patch").is_file())
             self.assertTrue((root / "artifact/agent-output.txt").is_file())
 
+    def test_unchanged_source_bundles_only_for_comment_mode(self):
+        no_change = {"summary": "DryRun reports no findings on this head, so no change is needed. Tests were not run.", "files": {}}
+        for kind in ("comment", "findings"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for directory in ("original", "source"):
+                    (root / directory / "app").mkdir(parents=True)
+                    (root / directory / "app/test.rb").write_text("old\n")
+                runner.save(root / "context.json", dict(context(), kind=kind))
+                runner.save(root / "agent-output.txt", no_change)
+                if kind == "findings":
+                    with self.assertRaises(ValueError):
+                        runner.bundle(root)
+                    self.assertFalse((root / "artifact").exists())
+                    continue
+                runner.bundle(root)
+                self.assertEqual(runner.load(root / "artifact/changes.json"), [])
+                self.assertEqual(runner.read_report(root / "artifact", []), no_change)
+                self.assertEqual((root / "artifact/fix.patch").read_text(), "")
+                with self.assertRaises(ValueError):
+                    runner.validate_changes([])
+
     def test_body_limit_counts_utf8_without_truncating(self):
         self.assertEqual(runner.bounded_body("é" * 30000), "é" * 30000)
         with self.assertRaises(ValueError):
@@ -884,6 +910,51 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "stale"):
                 runner.publish_comment(Path("/unused"))
             self.assertTrue(all(len(call.args) == 1 for call in gh.call_args_list))
+
+    def test_no_change_result_removes_stale_suggestions_and_explains(self):
+        ctx = context()
+        bot = {"login": "github-actions[bot]"}
+        stale = f"<!-- dryrun-dcode:comment:42 -->\n<!-- version:{'0' * 64} -->\n{runner.REPORT_FORMAT}"
+        timeline = [{"id": 2, "user": bot, "body": stale}]
+        inline = [{"id": 3, "user": bot, "body": stale}, {"id": 5, "user": {"login": "human"}, "body": stale}]
+        no_change = {"summary": "DryRun no longer reports findings on this head; no change is needed.", "files": {}}
+        writes = []
+        def gh(path, method="GET", data=None, pages=False):
+            if method == "GET":
+                if "/issues/7/comments?" in path:
+                    return list(timeline)
+                return list(inline) if "/pulls/7/comments?" in path else []
+            writes.append((path, method))
+            if method == "PATCH":
+                timeline[0]["body"] = data["body"]
+            return {}
+        with patch.object(runner, "verify_publication", return_value=(ctx, [])), patch.object(runner, "read_report", return_value=no_change), patch.object(runner, "recheck_source"), patch.object(runner, "gh", side_effect=gh):
+            runner.publish_comment(Path("/unused"))
+        self.assertEqual(writes, [(f"repos/{REPO}/pulls/comments/3", "DELETE"), (f"repos/{REPO}/issues/comments/2", "PATCH")])
+        body = timeline[0]["body"]
+        self.assertIn("No DryRun fix proposed", body)
+        self.assertIn(no_change["summary"], body)
+        self.assertNotIn("Changes by file", body)
+        self.assertNotIn("Complete proposed patch", body)
+        self.assertIn(f"<!-- version:{ctx['version']} -->", body)
+
+    def test_stale_comment_source_skips_publication_without_failing(self):
+        pr = {"state": "open", "head": {"sha": "b" * 40, "repo": {"id": 123}}}
+        with patch.object(runner, "gh", side_effect=[pr, comment()]):
+            with self.assertRaises(runner.StaleSource):
+                runner.recheck_source(context())
+        for command, error, skipped in (("publish-comment", runner.StaleSource("changed"), True),
+                                        ("publish-comment", ValueError("mismatch"), False),
+                                        ("publish-findings", runner.StaleSource("changed"), False)):
+            with self.subTest(command=command, error=type(error).__name__):
+                target = "publish_" + command.removeprefix("publish-")
+                with patch("sys.argv", ["runner.py", command, "--root", "/unused"]), patch.object(runner, target, side_effect=error), patch("builtins.print") as output:
+                    if skipped:
+                        runner.main()
+                        self.assertIn("::notice::", output.call_args.args[0])
+                    else:
+                        with self.assertRaises(ValueError):
+                            runner.main()
 
     def test_combined_findings_create_one_commit_and_one_pr(self):
         ctx = {"kind": "findings", "repository": REPO, "sha": "a" * 40, "version": "v" * 64,
