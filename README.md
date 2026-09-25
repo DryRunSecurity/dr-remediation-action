@@ -1,60 +1,61 @@
 # DryRun Remediation
 
-Two reusable GitHub Actions workflows, powered by the existing Deep Agents Code runtime and DryRun remediation skills. Generation, validation, and publishing are centrally maintained here; consumers keep only a small caller defining events, permissions, inputs, and secrets.
+GitHub Actions workflows that use an AI agent to propose fixes for security findings from [DryRun Security](https://www.dryrun.security).
 
-| Workflow | Result | Caller example |
+| Workflow | Trigger | Result |
 |---|---|---|
-| [PR comment remediation](.github/workflows/dryrun-comment-remediation.yml) | Explained inline suggestions and a timeline summary/patch on the existing PR; no commits or pushes | [Comment caller](examples/github-actions/dryrun-comment-remediation.yml) |
-| [Finding remediation](.github/workflows/dryrun-findings-remediation.yml) | One combined remediation PR for finding UUIDs supplied directly or through an issue | [Finding caller](examples/github-actions/dryrun-findings-remediation.yml) |
+| **PR comment remediation** | DryRun Security comments on a pull request with findings | Inline code suggestions on that PR, each explaining why it fixes the finding, plus a summary comment with the full patch. Nothing is committed. |
+| **Finding remediation** | You run it with one or more DryRun finding IDs, or an issue listing them | One pull request containing the fixes, with a detailed explanation of each finding and change. |
 
-Both publish agent-written explanations of the original issue, exact changes, why they address it, and remaining prerequisites. Existing matching results are reused; an existing remediation PR can be inspected read-only to refresh its explanation without another commit.
+Every fix comes with the agent's explanation: the original issue and its impact, what changed and where, why the change addresses it, and anything still needed before merging (such as configuration or deployment steps).
 
-## Install
+You add a small workflow file to your repository that calls these workflows. The remediation logic stays in this repository.
 
-**First release pending:** `v1` has not been published. The examples show the intended release interface. Before the first release, replace `@v1` with the full feature-branch commit SHA containing these workflows. Creating this PR does not publish a tag or release.
+## Quick start
 
-1. Copy the desired [caller example](examples/github-actions/) into your repository's `.github/workflows/` directory on the **default branch**. GitHub requires this for automatic `issue_comment` events and manual dispatch availability. You do not copy the runtime or central multi-job workflows.
-2. Create repository secret `OPENAI_API_KEY`. Examples explicitly pass it as `MODEL_API_KEY`; secrets are not inherited implicitly. GitHub Free private repositories need repository secrets because organization secrets are unavailable to them.
-3. For finding remediation, also create secret `DRYRUN_API_KEY` and variable `DRYRUN_ACCOUNT_ID`, or supply the account UUID when dispatching.
-4. Keep the example's permissions and allow this public reusable workflow and its referenced actions in your Actions policy. Finding remediation requires repository **and organization** policy to allow GitHub Actions to create pull requests; it does not bypass that policy.
+### PR comment remediation
 
-The core comment caller is:
+1. Add [`examples/github-actions/dryrun-comment-remediation.yml`](examples/github-actions/dryrun-comment-remediation.yml) to `.github/workflows/` on your **default branch**.
+2. Add a repository secret `OPENAI_API_KEY` (see [Model providers](#model-providers) for Anthropic, Azure OpenAI, or other gateways).
+
+When DryRun Security posts or updates a comment with findings on a pull request, the workflow runs automatically. You can also run it manually from the Actions tab with a PR number.
+
+The core of the caller is:
 
 ```yaml
-name: DryRun remediation
 on:
   issue_comment:
     types: [created, edited]
-permissions:
-  contents: read
-  pull-requests: write
-  issues: read
+
 jobs:
   remediate:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
     uses: DryRunSecurity/dr-remediation-action/.github/workflows/dryrun-comment-remediation.yml@v1
     secrets:
       MODEL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-Automatic runs accept only created/edited PR **timeline conversation comments** from `dryrunsecurity[bot]` (ID `142451713`, type `Bot`), not inline review comments. The bot must also be the event sender, so a person editing DryRun's comment does not trigger an automatic run. The full example also supports manual dispatch. Only open same-repository PRs are supported; forks are excluded. Manual comment runs and all finding runs require a repository writer.
+### Finding remediation
 
-Comment runs are serialized per PR. A newer DryRun comment edit cancels an in-progress proposal for the same PR. If the comment or PR head changes before publishing, the older run skips publication instead of failing. If the agent proposes no changes, for example after DryRun reports the PR clean, the workflow removes its earlier suggestions for that comment and posts the agent's explanation.
+1. Add [`examples/github-actions/dryrun-findings-remediation.yml`](examples/github-actions/dryrun-findings-remediation.yml) to `.github/workflows/` on your **default branch**.
+2. Add repository secrets:
+   - `OPENAI_API_KEY`
+   - `DRYRUN_API_KEY`: a DryRun API key that can read your account's findings.
+   - `DRYRUN_ACCOUNT_ID`: your DryRun account ID.
+3. Allow GitHub Actions to create pull requests: **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**. If the setting is disabled at the organization level, an organization owner must enable it there first.
+4. Go to **Actions → Remediate DryRun findings → Run workflow** and supply exactly one of:
+   - `finding_id`: a single finding ID.
+   - `finding_ids`: up to 20 finding IDs, separated by commas or whitespace.
+   - `issue_number`: an issue that lists finding IDs (format below).
 
-A reusable workflow is called at the **job level**, as above. It supplies separate generation and publishing jobs. A root `uses: DryRunSecurity/dr-remediation-action@v1` step would require an `action.yml` and cannot encapsulate this multi-job separation; this repository deliberately exposes workflows instead.
+All selected findings are fixed together in one pull request. When you start from an issue, the workflow also comments on the issue with a link to the pull request.
 
-## Finding IDs and issues
+#### Issue format
 
-Install the [finding caller](examples/github-actions/dryrun-findings-remediation.yml), then select **Actions → Remediate DryRun findings → Run workflow**. Supply exactly one of:
-
-- `finding_id`: one finding UUID.
-- `finding_ids`: comma- or whitespace-separated UUIDs, up to 20 unique IDs. Duplicates are normalized and removed.
-- `issue_number`: an issue in the caller repository with the format below.
-
-All selected findings are resolved through the account-scoped API before editing. The workflow produces one combined remediation PR and, for an issue-based run, adds or updates a link on the source issue.
-
-### Copy-paste issue format
-
-Replace these example UUIDs with real DryRun finding IDs:
+List finding IDs under a `## DryRun finding IDs` heading. Put any other text under a different heading.
 
 ```markdown
 ## DryRun finding IDs
@@ -62,96 +63,137 @@ Replace these example UUIDs with real DryRun finding IDs:
 - 22222222-2222-4222-8222-222222222222
 
 ## Context
-Describe relevant repository or deployment context here.
+Anything reviewers should know.
 ```
 
-Keep the ID section limited to UUIDs, separated by whitespace/commas or listed as bullets. An unlabelled fenced list also works. The section ends at the next Markdown heading; put prose under `## Context`, not among the IDs. An alternative is to include DryRun risk-register links such as `https://app.dryrun.security/risk-register?finding=11111111-1111-4111-8111-111111111111` in the issue body.
+Instead of the heading, you can paste DryRun dashboard links such as `https://app.dryrun.security/risk-register?finding=<finding-id>`.
 
-**Current hookup is manual:** create the issue, then dispatch with its `issue_number`. Creating, editing, or labelling an issue does not automatically start remediation. No automatic issue-label trigger is included.
+Creating or labeling an issue does not start remediation on its own. Run the workflow with the issue's number.
 
-## Inputs and credentials
+## Configuration
 
-Shared `with` inputs:
+### Inputs
 
-| Input | Default | Meaning |
+Both workflows:
+
+| Input | Default | Description |
 |---|---|---|
 | `provider` | `openai` | `openai` or `anthropic` |
-| `model` | Empty | `gpt-5.5` for OpenAI; `claude-sonnet-4-5` for Anthropic |
-| `base_url` | Empty | Official provider API, or an explicitly configured HTTPS-compatible gateway |
-| `use_responses_api` | `true` | OpenAI Responses API; set `false` for Chat Completions-only gateways; ignored for Anthropic |
+| `model` | `gpt-5.5` (OpenAI) / `claude-sonnet-4-5` (Anthropic) | Model name, or deployment name for Azure OpenAI |
+| `base_url` | Provider's official API | HTTPS endpoint of a compatible API or gateway |
+| `use_responses_api` | `true` | Use the OpenAI Responses API. Set `false` for gateways that only support Chat Completions. Ignored for Anthropic. |
 
-Without an override, OpenAI uses `https://api.openai.com/v1` and Anthropic uses `https://api.anthropic.com`. There is no internal endpoint or credential fallback.
+PR comment remediation:
 
-**Comment inputs:** `pr_number` is required for manual calls; optional `comment_id` defaults to the most recently updated verified DryRun comment on that PR. Automatic calls use the event's PR and comment.
+| Input | Description |
+|---|---|
+| `pr_number` | PR to remediate. Required for manual runs. |
+| `comment_id` | DryRun comment to use. Defaults to the most recently updated DryRun comment on the PR. |
 
-**Finding inputs:** exactly one of `finding_id`, `finding_ids`, or `issue_number`, plus an account UUID supplied through `account_id` or secret `DRYRUN_ACCOUNT_ID`. A nonempty `account_id` input takes precedence. Optional `base_branch` defaults to the caller's default branch; `finding_type` accepts `pullrequest`, `deepscan`, or `sca`. `dryrun_api_base_url` defaults to `https://simple-api.dryrun.security`.
+Finding remediation:
 
-To inject the account UUID as a secret, omit the caller's `with.account_id` and any account-ID dispatch input, then add `DRYRUN_ACCOUNT_ID: ${{ secrets.DRYRUN_ACCOUNT_ID }}` to its existing `secrets` mapping. The secret is passed only to finding preparation; no repository variable is needed.
+| Input | Description |
+|---|---|
+| `finding_id` / `finding_ids` / `issue_number` | Findings to fix. Supply exactly one. |
+| `account_id` | DryRun account ID. Overrides the `DRYRUN_ACCOUNT_ID` secret. |
+| `base_branch` | Branch to fix. Defaults to the repository's default branch. |
+| `finding_type` | Optional: `pullrequest`, `deepscan`, or `sca`. Needed only when an ID matches more than one type. |
+| `dryrun_api_base_url` | DryRun API endpoint. Defaults to `https://simple-api.dryrun.security`. |
 
-**Secrets:** both workflows require `MODEL_API_KEY`, paired with the chosen provider and endpoint. Optional `MODEL_BASE_URL` supplies a private HTTPS endpoint and takes precedence over the public `base_url` input when nonempty. An empty or omitted secret preserves the public input or native default. Findings additionally require `DRYRUN_API_KEY`. The caller's built-in GitHub token is used automatically; no separate GitHub credential is accepted.
+### Secrets
 
-For a private Azure OpenAI-compatible endpoint, store the full resource URL ending in `/openai/v1` in repository secret `MODEL_BASE_URL` and the Azure API key in `OPENAI_API_KEY`. Add these settings to the calling job, retaining its existing target inputs and any `DRYRUN_API_KEY` mapping:
+| Secret | Required | Description |
+|---|---|---|
+| `MODEL_API_KEY` | Yes | API key for your model provider or gateway |
+| `MODEL_BASE_URL` | No | Private endpoint URL. Overrides `base_url` and is kept out of logs and published output. |
+| `DRYRUN_API_KEY` | Finding remediation | DryRun API key |
+| `DRYRUN_ACCOUNT_ID` | Finding remediation, unless `account_id` is set | DryRun account ID |
 
-```yaml
-with:
-  provider: openai
-  model: YOUR_AZURE_DEPLOYMENT_NAME
-  use_responses_api: true
-secrets:
-  MODEL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  MODEL_BASE_URL: ${{ secrets.MODEL_BASE_URL }}
-```
+Pass secrets explicitly in the caller's `secrets:` block, as the examples do. GitHub doesn't pass them to reusable workflows automatically.
 
-Pass the endpoint under `secrets`, not `with`: GitHub does not allow secret expressions in reusable-job inputs. The secret is used only during preparation and agent execution; it is not stored in the published context or prompt. The private runtime configuration is not bundled, and endpoint/hostname diagnostics and the API key are redacted from retained agent output and errors. This uses the compatible v1 API with a deployment name; no Azure-specific SDK or `api-version` parameter is needed.
+On GitHub Free, organization secrets aren't available to private repositories. Use repository secrets instead.
 
-For Anthropic, merge this into the caller's job, retaining any finding inputs and `DRYRUN_API_KEY` mapping:
+### Model providers
+
+**OpenAI** is the default and needs only `MODEL_API_KEY`.
+
+**Anthropic:**
 
 ```yaml
 with:
   provider: anthropic
-  model: claude-sonnet-4-5
 secrets:
   MODEL_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-For an OpenAI-compatible gateway:
+**Azure OpenAI.** Set `model` to your deployment name. Store the endpoint, ending in `/openai/v1`, in a `MODEL_BASE_URL` secret so it stays private:
 
 ```yaml
 with:
   provider: openai
-  model: your-gateway-model
-  base_url: https://gateway.example.com/v1
-  use_responses_api: false
+  model: your-deployment-name
 secrets:
-  MODEL_API_KEY: ${{ secrets.MODEL_GATEWAY_API_KEY }}
+  MODEL_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+  MODEL_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
 ```
 
-Anthropic-compatible gateways use `provider: anthropic` with their `base_url`, model, and matching key. Only configure endpoints you trust with repository content and that key. **Native AWS Bedrock authentication is not supported**; a URL override does not add AWS authentication or translate its protocol.
+**Other OpenAI- or Anthropic-compatible gateways.** Set `provider`, `model`, and either `base_url` or the `MODEL_BASE_URL` secret, plus the gateway's key. For Chat Completions-only OpenAI-compatible gateways, also set `use_responses_api: false`.
 
-## Execution boundaries
+AWS Bedrock's native authentication is not supported.
 
-- Proposal jobs have read-only GitHub permissions. The DryRun key is passed only to finding preparation; the model container receives only the selected model credential, not GitHub or DryRun credentials.
-- Publication runs on a separate runner with the necessary write permissions. It rechecks the target, current source, canonical before-images, and report before posting or committing; it runs no agent and receives no model or DryRun credentials in its steps.
-- The agent has restricted filesystem tools, no shell execution, and no project instructions, hooks, or MCP. Protected/unsupported source paths are excluded. Model API networking remains enabled: this is **not OS-level network isolation**.
-- An external credential-free npm container can regenerate a changed root manifest's lockfile, using only the manifest and original `package-lock.json` with lifecycle scripts disabled. Workspaces, alternative package managers, and authenticated private packages are unsupported.
-- Application tests, builds, and deployment checks are **not run**. npm completion is not application validation. Review the explanations, operational prerequisites, and complete patch; individual suggestions can depend on other changes.
-- Artifacts may contain sensitive source before-images and agent output. They are retained for seven days; agent stdout is not echoed in workflow logs.
-- No automatic merges or deployments. Changes made with `GITHUB_TOKEN` do not trigger ordinary downstream Actions workflows, so arrange **explicit CI validation** before merging a generated PR.
+The model provider receives your repository source and finding details. Only use a provider or gateway you trust with that data.
 
-## Maintainers and validation
+## How it works
 
-The runtime lives here; the skills remain in [external-plugin-marketplace](https://github.com/DryRunSecurity/external-plugin-marketplace). Nothing is fetched from a mutable skill branch.
+Each workflow runs in two jobs.
 
-- Four runtime checkouts (both jobs in both workflows) pin `95fc5a9b65e6055714fcf9ee443e5c3af66cffba` in this repository.
-- Two skill checkouts (proposal jobs only) pin commit `918ad791da12f5b7bfa95d3e30a064a18bc9170a` on the skill repository's `main` branch.
-- When changing runtime or skills, commit the implementation first, then update the corresponding four or two checkout pins together and validate before releasing. Merely moving a workflow release reference does not update these implementation pins.
-- After review and merge, publish the first versioned release and `v1` reference. Compatible future releases may advance `v1`; consumers requiring immutable dependencies should pin a full workflow commit SHA. No release is published by the initial implementation PR.
+1. **Propose** (read-only GitHub access):
+   - Fetches the DryRun comment or findings and a snapshot of your source.
+   - Runs the agent in an isolated container. The container receives only the model API key: no GitHub token or DryRun key.
+   - The agent can only read and edit source files. It can't run shell commands, tests, or package managers, and it ignores repository agent-instruction files such as `AGENTS.md` and `CLAUDE.md`.
+2. **Publish** (write access, no agent):
+   - Checks that the PR, comment, or base branch hasn't changed since the proposal was made.
+   - Checks that the patch applies exactly to the current source.
+   - Posts the suggestions or opens the pull request.
 
-Local checks, from the repository root:
+The agent never edits `.github/` or environment files (`.env*`).
+
+For **npm dependency fixes**, the agent edits `package.json` only. A separate container with no credentials then updates the root `package-lock.json` using `npm install --package-lock-only --ignore-scripts`.
+
+For **PR comments**:
+- Runs only for comments posted or edited by the DryRun Security bot, not for comments from people.
+- Runs one at a time per PR. A newer DryRun update cancels an in-progress run, and a result that is out of date by the time it would be posted is skipped instead of failing.
+- If the agent concludes no change is needed (for example, after DryRun reports the PR clean), the workflow removes its earlier suggestions and posts the explanation.
+
+Manual runs require write access to the repository.
+
+## Limitations
+
+- **Review before merging.** Fixes are proposed for human review. Nothing is merged or deployed automatically, and the agent doesn't run your tests or build.
+- **Run CI yourself on generated PRs.** Pull requests opened with the workflow's built-in token don't trigger your other workflows.
+- **Same-repository PRs only.** Pull requests from forks aren't supported.
+- **File limits:**
+  - Only UTF-8 text files up to 1 MiB each are visible to the agent.
+  - A proposal can change up to 30 files.
+- **npm lockfiles:** automatic lockfile updates require a root npm `package-lock.json` without workspaces. Yarn, pnpm, Bun and authenticated private registries aren't supported.
+- **Network:** the agent container needs network access to reach the model API. Its restrictions come from the tools it's allowed, not from blocking network access.
+- **Artifacts:** proposals and agent output are kept as workflow artifacts for 7 days and contain source excerpts. On public repositories, anyone who can view the run can download them.
+- **Public repositories:** finding remediation explains the vulnerability in the pull request description, which is public on a public repository. Consider this before remediating unfixed findings there.
+
+## Versioning
+
+Reference `@v1` to receive compatible updates, or pin a full commit SHA to control exactly which version runs.
+
+## Development
+
+The runtime lives in [`.github/dcode-remediation`](.github/dcode-remediation). The agent skills are pinned from [DryRunSecurity/external-plugin-marketplace](https://github.com/DryRunSecurity/external-plugin-marketplace).
+
+- The workflows check out the runtime and skills at exact commits: four runtime checkouts (`95fc5a9b65e6055714fcf9ee443e5c3af66cffba`) and two skill checkouts (`918ad791da12f5b7bfa95d3e30a064a18bc9170a`).
+- After changing the runtime or skills, commit the change, then update the corresponding pins.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/dcode-remediation -p 'test_*.py' -v
 docker build --tag dcode-remediation:0.1.66 .github/dcode-remediation
 ```
 
-CI also lints the central workflows and caller examples with actionlint 1.7.12. The Docker build runs the pinned-runtime tool-policy check that is skipped when its dependencies are absent on the host. These are runtime/packaging checks, not application validation or proof of live model/API delivery.
+CI runs the tests and the Docker build, and lints the workflows and examples with actionlint.

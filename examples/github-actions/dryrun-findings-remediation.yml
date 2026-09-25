@@ -12,9 +12,6 @@ on:
       issue_number:
         description: Issue with a DryRun finding IDs heading or risk-register finding links
         type: string
-      account_id:
-        description: DryRun account UUID; blank uses repository variable DRYRUN_ACCOUNT_ID
-        type: string
       base_branch:
         description: Remediation base branch; blank uses the repository default branch
         type: string
@@ -35,9 +32,9 @@ jobs:
       finding_id: ${{ inputs.finding_id }}
       finding_ids: ${{ inputs.finding_ids }}
       issue_number: ${{ inputs.issue_number }}
-      account_id: ${{ inputs.account_id || vars.DRYRUN_ACCOUNT_ID }}
       base_branch: ${{ inputs.base_branch }}
       finding_type: ${{ inputs.finding_type }}
     secrets:
       MODEL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       DRYRUN_API_KEY: ${{ secrets.DRYRUN_API_KEY }}
+      DRYRUN_ACCOUNT_ID: ${{ secrets.DRYRUN_ACCOUNT_ID }}
